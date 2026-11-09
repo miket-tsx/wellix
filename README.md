@@ -63,16 +63,6 @@ Manage Emojis and Stickers, View Audit Log, Create Invite,
 Read Message History, Send Messages, Embed Links, Attach Files, Add Reactions
 ```
 
-### avatar
-
-If the bot is already in the Wellix server:
-
-```bash
-npm run avatar
-```
-
-It takes the guild icon and sets it as the bot avatar.
-
 ---
 
 ## commands
