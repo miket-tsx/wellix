@@ -1,0 +1,21 @@
+{
+  "name": "wellix",
+  "version": "2.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Wellix - moderator + autonomous admin bot",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "dev": "node --watch src/index.js",
+    "avatar": "node scripts/set-avatar.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "discord.js": "^14.28.1",
+    "dotenv": "^16.4.5"
+  }
+}
