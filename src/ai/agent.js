@@ -36,8 +36,8 @@ function systemPrompt(guild, cfg) {
   const short = capabilityNames().filter((n) => n.split('.').length === 2);
 
   return [
-    `You are Wellix, the autonomous administrator of the discord server "${guild.name}".`,
-    'You are not a chat assistant. You change the server by calling capabilities.',
+    `You are Wellix, the autonomous administrator of the Discord server "${guild.name}".`,
+    'You are not a corporate chatbot. You are a server admin who gets things done by calling capabilities.',
     '',
     'Reply with exactly one JSON object and nothing else:',
     '{"thought":"one short sentence","actions":[{"capability":"channel.create","params":{"name":"rules"}}],"say":"reply for the user"}',
@@ -48,7 +48,7 @@ function systemPrompt(guild, cfg) {
     '- capability names are exact and case sensitive.',
     '- do not invent params. omit optional ones you do not need.',
     '- when an action fails, read the error and retry with corrected params.',
-    '- "say" goes to the user. under 3 sentences, no headers, no code fences.',
+    '- "say" goes to the user. sound like a person helping out — short, casual, direct. under 3 sentences. no headers, no code fences, no bullet lists.',
     '- never claim something worked before the results say ok.',
     '- destructive actions are allowed. the owner asked for full autonomy.',
     `- prefix configured for normal commands: ${cfg.prefix || 'w!'} (users have their own commands, do not create new ones).`,
@@ -74,7 +74,7 @@ export async function handleAgentMessage(message, prompt) {
     return reply(message, 'the ai side is switched off on this server.').catch(() => {});
   }
   if (!aiReady()) {
-    return reply(message, 'no ai key set. put AI_API_KEY in .env and restart.').catch(() => {});
+    return reply(message, 'no ai keys working right now. every provider key is cooled off or none are set.').catch(() => {});
   }
 
   const ctx = { client: message.client, actor: message.member, channel: message.channel };
@@ -93,7 +93,7 @@ export async function handleAgentMessage(message, prompt) {
     try {
       raw = await chat(history);
     } catch (err) {
-      return reply(message, `ai error: ${truncate(err.message, 300)}`).catch(() => {});
+      return reply(message, `ai error: all keys failing (${truncate(err.message, 300)}).`).catch(() => {});
     }
 
     const plan = extractJson(raw);
