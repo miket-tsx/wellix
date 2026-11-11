@@ -1,8 +1,9 @@
-import { ChannelType, PermissionsBitField } from 'discord.js';
-import { resolveChannel, resolveMember } from '../lib/resolvers.js';
+import { ChannelType } from 'discord.js';
+import { resolveChannel } from '../lib/resolvers.js';
 import { COLOR, embed } from '../lib/render.js';
 import { send } from '../lib/cv2.js';
 import { clamp, truncate } from '../lib/util.js';
+import { missingBotPerms } from './shared.js';
 import { B, C, I, M, S } from './helpers.js';
 
 const everyone = (guild) => guild.roles.everyone;
@@ -27,6 +28,8 @@ export default [
     async run({ guild, channel, args, ok, err }) {
       const ch = args.channel || channel;
       if (ch.type !== ChannelType.GuildText && ch.type !== ChannelType.GuildAnnouncement) return err('Not a text channel.');
+      const missing = missingBotPerms(guild, ch, ['ManageChannels']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       await ch.setRateLimitPerUser(clamp(args.seconds, 0, 21600));
       return ok(args.seconds ? `Slowmode set to ${args.seconds}s in ${ch}.` : `Slowmode off in ${ch}.`);
     },
@@ -41,6 +44,8 @@ export default [
     async run({ guild, channel, args, ok, err }) {
       const ch = args.channel || channel;
       if (!ch.manageable) return err('I cannot edit that channel.');
+      const missing = missingBotPerms(guild, ch, ['ManageChannels']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       await setSend(guild, ch, false);
       return ok(`Locked ${ch}${args.reason ? ` — ${args.reason}` : ''}.`);
     },
@@ -55,6 +60,8 @@ export default [
     async run({ guild, channel, args, ok, err }) {
       const ch = args.channel || channel;
       if (!ch.manageable) return err('I cannot edit that channel.');
+      const missing = missingBotPerms(guild, ch, ['ManageChannels']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       await setSend(guild, ch, true);
       return ok(`Unlocked ${ch}.`);
     },
@@ -67,7 +74,9 @@ export default [
     perms: ['ManageChannels'],
     options: [B('confirm', 'Really lock everything?', true)],
     async run({ guild, args, ok, err }) {
-      if (!args.confirm) return err('Pass confirm:true to actually do it.');
+      if (!args.confirm) return err('Pass `confirm:true` to actually lock every channel.');
+      const missing = missingBotPerms(guild, null, ['ManageChannels']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       const channels = guild.channels.cache.filter(
         (c) => c.type === ChannelType.GuildText && c.manageable && c.id !== guild.systemChannelId,
       );
@@ -104,9 +113,10 @@ export default [
     async run({ guild, channel, args, ok, err }) {
       const old = args.channel || channel;
       if (!old?.manageable) return err('I cannot manage that channel.');
-      const clone = await old.clone({ reason: 'nuke' });
-      await old.delete('nuke');
-      send(clone, { embeds: [embed({ title: 'channel nuked', description: 'Fresh start.', color: COLOR.info })] }).catch(() => {});
+      const clone = await old.clone({ reason: 'nuke' }).catch(() => null);
+      if (!clone) return err('Failed to clone the channel.');
+      await old.delete('nuke').catch(() => {});
+      await send(clone, { embeds: [embed({ title: 'channel nuked', description: 'Fresh start.', color: COLOR.info })] }).catch(() => {});
       return ok(`Nuked into ${clone}.`);
     },
   },
@@ -119,7 +129,10 @@ export default [
     options: [I('amount', '1-100', true, { min: 1, max: 100 })],
     async run({ channel, args, ok, err }) {
       if (!channel.bulkDelete) return err('Not a text channel.');
-      const deleted = await channel.bulkDelete(clamp(args.amount, 1, 100), true);
+      const missing = missingBotPerms(null, channel, ['ManageMessages']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
+      const deleted = await channel.bulkDelete(clamp(args.amount, 1, 100), true).catch(() => null);
+      if (!deleted) return err('Could not delete — messages may be older than 14 days.');
       return ok(`Deleted ${deleted.size} messages.`);
     },
   },
@@ -132,12 +145,15 @@ export default [
     options: [M('member', 'Whose messages', true), I('amount', 'How many to scan (max 100)', false, { min: 1, max: 100 })],
     async run({ channel, args, ok, err }) {
       if (!args.member) return err('Member not found.');
+      if (!channel.bulkDelete) return err('Not a text channel.');
+      const missing = missingBotPerms(null, channel, ['ManageMessages']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       const limit = clamp(args.amount || 50, 1, 100);
       const fetched = await channel.messages.fetch({ limit: 100 });
       const mine = [...fetched.values()].filter((m) => m.author.id === args.member.id).slice(0, limit);
       if (!mine.length) return err('Nothing to delete.');
-      const deleted = await channel.bulkDelete(mine, true);
-      return ok(`Deleted ${deleted.size} messages from **${args.member.user.tag}**.`);
+      const deleted = await channel.bulkDelete(mine, true).catch(() => null);
+      return ok(`Deleted ${deleted ? deleted.size : 0} messages from **${args.member.user.tag}**.`);
     },
   },
   {
@@ -147,12 +163,15 @@ export default [
     require: 'mod',
     perms: ['ManageMessages'],
     options: [I('amount', 'How many to scan', false, { min: 1, max: 100 })],
-    async run({ channel, args, ok }) {
+    async run({ channel, args, ok, err }) {
+      if (!channel.bulkDelete) return err('Not a text channel.');
+      const missing = missingBotPerms(null, channel, ['ManageMessages']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       const fetched = await channel.messages.fetch({ limit: clamp(args.amount || 100, 1, 100) });
       const bots = [...fetched.values()].filter((m) => m.author.bot);
       if (!bots.length) return ok('No bot messages in range.');
-      const deleted = await channel.bulkDelete(bots, true);
-      return ok(`Deleted ${deleted.size} bot messages.`);
+      const deleted = await channel.bulkDelete(bots, true).catch(() => null);
+      return ok(`Deleted ${deleted ? deleted.size : 0} bot messages.`);
     },
   },
   {
@@ -162,12 +181,15 @@ export default [
     require: 'mod',
     perms: ['ManageMessages'],
     options: [I('amount', 'How many to scan', false, { min: 1, max: 100 })],
-    async run({ channel, args, ok }) {
+    async run({ channel, args, ok, err }) {
+      if (!channel.bulkDelete) return err('Not a text channel.');
+      const missing = missingBotPerms(null, channel, ['ManageMessages']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       const fetched = await channel.messages.fetch({ limit: clamp(args.amount || 100, 1, 100) });
       const withEmbeds = [...fetched.values()].filter((m) => m.embeds.length);
       if (!withEmbeds.length) return ok('No embeds in range.');
-      const deleted = await channel.bulkDelete(withEmbeds, true);
-      return ok(`Deleted ${deleted.size} messages with embeds.`);
+      const deleted = await channel.bulkDelete(withEmbeds, true).catch(() => null);
+      return ok(`Deleted ${deleted ? deleted.size : 0} messages with embeds.`);
     },
   },
   {
@@ -179,7 +201,8 @@ export default [
     options: [C('channel', 'Channel to clone', true), S('name', 'New name (optional)')],
     async run({ args, ok, err }) {
       if (!args.channel) return err('Channel not found.');
-      const clone = await args.channel.clone({ name: args.name || undefined, reason: 'clone' });
+      const clone = await args.channel.clone({ name: args.name || undefined, reason: 'clone' }).catch(() => null);
+      if (!clone) return err('Failed to clone the channel.');
       return ok(`Cloned into ${clone}.`);
     },
   },
@@ -207,8 +230,10 @@ export default [
     async run({ channel, args, ok, err }) {
       const ch = args.channel || channel;
       if (!ch.manageable) return err('I cannot rename that channel.');
+      const name = args.name.trim().replace(/\s+/g, '-').toLowerCase();
+      if (!name || name.length > 100) return err('Name must be between 1 and 100 characters.');
       const old = ch.name;
-      await ch.setName(args.name);
+      await ch.setName(name);
       return ok(`**${old}** renamed to **${ch.name}**.`);
     },
   },
@@ -219,8 +244,11 @@ export default [
     require: 'mod',
     perms: ['ManageChannels'],
     options: [C('channel', 'Channel (default: here)')],
-    async run({ guild, channel, args, ok }) {
+    async run({ guild, channel, args, ok, err }) {
       const ch = args.channel || channel;
+      if (!ch.manageable) return err('I cannot edit that channel.');
+      const missing = missingBotPerms(guild, ch, ['ManageChannels']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       await ch.permissionOverwrites.edit(everyone(guild), { ViewChannel: false });
       return ok(`${ch} is now hidden.`);
     },
@@ -232,8 +260,11 @@ export default [
     require: 'mod',
     perms: ['ManageChannels'],
     options: [C('channel', 'Channel (default: here)')],
-    async run({ guild, channel, args, ok }) {
+    async run({ guild, channel, args, ok, err }) {
       const ch = args.channel || channel;
+      if (!ch.manageable) return err('I cannot edit that channel.');
+      const missing = missingBotPerms(guild, ch, ['ManageChannels']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
       await ch.permissionOverwrites.edit(everyone(guild), { ViewChannel: true });
       return ok(`${ch} is visible again.`);
     },

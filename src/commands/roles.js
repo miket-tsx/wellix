@@ -2,15 +2,8 @@ import { guildCfg, saveGuild } from '../lib/db.js';
 import { resolveRole } from '../lib/resolvers.js';
 import { COLOR, embed } from '../lib/render.js';
 import { chunk, truncate } from '../lib/util.js';
+import { canActOn, canManageRole, hexColor, listBody, page, caseLine, missingBotPerms } from './shared.js';
 import { B, E, I, M, R, S } from './helpers.js';
-
-function hex(input) {
-  if (!input) return undefined;
-  const s = String(input).replace('#', '').trim();
-  if (/^[0-9a-f]{6}$/i.test(s)) return parseInt(s, 16);
-  if (/^[0-9a-f]{3}$/i.test(s)) return parseInt(s.split('').map((c) => c + c).join(''), 16);
-  return undefined;
-}
 
 export default [
   {
@@ -23,7 +16,9 @@ export default [
     async run({ guild, args, ok, err }) {
       const { member: target, role } = args;
       if (!target || !role) return err('Member or role not found.');
-      if (role.position >= guild.members.me.roles.highest.position) return err('That role sits above mine.');
+      if (!canActOn(guild, target)) return err('I cannot change roles for them — they outrank me or own the server.');
+      if (!canManageRole(guild, role)) return err('That role sits above my highest role or cannot be managed.');
+      if (target.roles.cache.has(role.id)) return err(`**${target.user.tag}** already has **${role.name}**.`);
       await target.roles.add(role);
       return ok(`Gave **${role.name}** to **${target.user.tag}**.`);
     },
@@ -38,7 +33,9 @@ export default [
     async run({ guild, args, ok, err }) {
       const { member: target, role } = args;
       if (!target || !role) return err('Member or role not found.');
-      if (role.position >= guild.members.me.roles.highest.position) return err('That role sits above mine.');
+      if (!canActOn(guild, target)) return err('I cannot change roles for them — they outrank me or own the server.');
+      if (!canManageRole(guild, role)) return err('That role sits above my highest role or cannot be managed.');
+      if (!target.roles.cache.has(role.id)) return err(`**${target.user.tag}** does not have **${role.name}**.`);
       await target.roles.remove(role);
       return ok(`Removed **${role.name}** from **${target.user.tag}**.`);
     },
@@ -50,15 +47,19 @@ export default [
     require: 'admin',
     perms: ['ManageRoles'],
     options: [S('name', 'Role name', true), S('color', 'Hex like #8b5cf6'), B('hoist', 'Show separately'), B('mentionable', 'Allow mentions')],
-    async run({ guild, args, ok }) {
+    async run({ guild, args, ok, err }) {
+      if (!args.name || args.name.length < 2 || args.name.length > 100) return err('Role name must be between 2 and 100 characters.');
+      if (guild.roles.cache.some((r) => r.name.toLowerCase() === args.name.toLowerCase() && r.id !== guild.id)) return err('A role with that name already exists.');
+      const color = hexColor(args.color) ?? 0;
       const role = await guild.roles.create({
         name: args.name,
-        color: hex(args.color) ?? 0,
+        color,
         hoist: !!args.hoist,
         mentionable: !!args.mentionable,
         reason: 'created via wellix',
-      });
-      return ok(`Created ${role} at position ${role.position}.`);
+      }).catch(() => null);
+      if (!role) return err('Failed to create the role — check my permissions and role limit.');
+      return ok(`Created **${role.name}** at position ${role.position}.`);
     },
   },
   {
@@ -70,10 +71,14 @@ export default [
     options: [R('role', 'Role to delete', true), B('confirm', 'Skip the safety check?')],
     async run({ guild, args, ok, err }) {
       if (!args.role) return err('Role not found.');
-      if (args.role.managed) return err('That role is managed by an integration, delete it there.');
-      if (args.role.position >= guild.members.me.roles.highest.position) return err('That role is above mine.');
+      if (args.role.id === guild.id) return err('Cannot delete @everyone.');
+      if (args.role.managed) return err('That role is managed by an integration — delete it at the source.');
+      if (!canManageRole(guild, args.role)) return err('That role sits above my highest role.');
+      const missing = missingBotPerms(guild, null, ['ManageRoles']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
+      if (!args.confirm) return err('Pass `confirm:true` to actually delete this role.');
       const name = args.role.name;
-      await args.role.delete('deleted via wellix');
+      await args.role.delete('deleted via wellix').catch(() => {});
       return ok(`Deleted **${name}**.`);
     },
   },
@@ -86,8 +91,11 @@ export default [
     options: [R('role', 'Role', true), S('name', 'New name', true)],
     async run({ guild, args, ok, err }) {
       if (!args.role) return err('Role not found.');
+      if (args.role.id === guild.id) return err('Cannot rename @everyone.');
+      if (!args.name || args.name.length < 2 || args.name.length > 100) return err('Name must be between 2 and 100 characters.');
+      if (!canManageRole(guild, args.role)) return err('That role sits above my highest role.');
       const old = args.role.name;
-      await args.role.setName(args.name, 'renamed via wellix');
+      await args.role.setName(args.name, 'renamed via wellix').catch(() => {});
       return ok(`**${old}** is now **${args.name}**.`);
     },
   },
@@ -100,13 +108,15 @@ export default [
     options: [R('role', 'Role', true), S('color', 'Hex or "reset"', true)],
     async run({ guild, args, ok, err }) {
       if (!args.role) return err('Role not found.');
+      if (args.role.id === guild.id) return err('Cannot recolour @everyone.');
+      if (!canManageRole(guild, args.role)) return err('That role sits above my highest role.');
       if (String(args.color).toLowerCase() === 'reset') {
-        await args.role.setColor(null);
-        return ok('Colour reset.');
+        await args.role.setColor(null).catch(() => {});
+        return ok(`**${args.role.name}** colour reset.`);
       }
-      const value = hex(args.color);
+      const value = hexColor(args.color);
       if (value === undefined) return err('That is not a hex colour.');
-      await args.role.setColor(value);
+      await args.role.setColor(value).catch(() => {});
       return ok(`**${args.role.name}** is now #${value.toString(16).padStart(6, '0')}.`);
     },
   },
@@ -119,7 +129,9 @@ export default [
     options: [R('role', 'Role', true), B('hoist', 'On or off', true)],
     async run({ guild, args, ok, err }) {
       if (!args.role) return err('Role not found.');
-      await args.role.setHoist(args.hoist);
+      if (args.role.id === guild.id) return err('Cannot hoist @everyone.');
+      if (!canManageRole(guild, args.role)) return err('That role sits above my highest role.');
+      await args.role.setHoist(args.hoist).catch(() => {});
       return ok(`Hoist for **${args.role.name}** is ${args.hoist ? 'on' : 'off'}.`);
     },
   },
@@ -132,7 +144,9 @@ export default [
     options: [R('role', 'Role', true), B('mentionable', 'On or off', true)],
     async run({ guild, args, ok, err }) {
       if (!args.role) return err('Role not found.');
-      await args.role.setMentionable(args.mentionable);
+      if (args.role.id === guild.id) return err('Cannot make @everyone mentionable.');
+      if (!canManageRole(guild, args.role)) return err('That role sits above my highest role.');
+      await args.role.setMentionable(args.mentionable).catch(() => {});
       return ok(`**${args.role.name}** ${args.mentionable ? 'can' : 'cannot'} be mentioned.`);
     },
   },
@@ -145,9 +159,11 @@ export default [
     options: [R('role', 'Role', true), I('position', 'Target position', true, { min: 0, max: 500 })],
     async run({ guild, args, ok, err }) {
       if (!args.role) return err('Role not found.');
+      if (args.role.id === guild.id) return err('Cannot move @everyone.');
+      if (!canManageRole(guild, args.role)) return err('That role sits above my highest role.');
       const ceiling = guild.members.me.roles.highest.position - 1;
-      const target = Math.min(args.position, ceiling);
-      await args.role.setPosition(target);
+      const target = Math.max(1, Math.min(args.position, ceiling));
+      await args.role.setPosition(target).catch(() => {});
       return ok(`**${args.role.name}** moved to ${args.role.position}.`);
     },
   },
@@ -159,21 +175,13 @@ export default [
     async run({ guild, args, ok, err }) {
       const role = args.role;
       if (!role) return err('Role not found.');
-      return ok(
-        embed({
-          title: role.name,
-          color: role.color || COLOR.neutral,
-          fields: [
-            { name: 'id', value: `\`${role.id}\``, inline: true },
-            { name: 'colour', value: role.hexColor, inline: true },
-            { name: 'position', value: String(role.position), inline: true },
-            { name: 'members', value: String(role.members.size), inline: true },
-            { name: 'hoisted', value: role.hoist ? 'yes' : 'no', inline: true },
-            { name: 'mentionable', value: role.mentionable ? 'yes' : 'no', inline: true },
-            { name: 'permissions', value: `${role.permissions.toArray().length} granted` },
-          ],
-        }),
-      );
+      const perms = role.permissions.toArray();
+      const notable = perms.filter((p) => ['Administrator', 'ManageGuild', 'ManageChannels', 'ManageRoles', 'ManageMessages', 'KickMembers', 'BanMembers', 'ModerateMembers', 'MentionEveryone'].includes(p));
+      return ok({
+        components: [{ type: 17, accent_color: role.color || 0x2b2d31, components: [
+          { type: 10, content: `## ${role.name}\n-# id: \`${role.id}\`\ncolour: ${role.hexColor}\nposition: ${role.position}\nmembers: ${role.members.size}\nhoisted: ${role.hoist ? 'yes' : 'no'}\nmentionable: ${role.mentionable ? 'yes' : 'no'}\nmanaged: ${role.managed ? 'yes' : 'no'}\npermissions: ${perms.length} granted${notable.length ? `\nnotable: ${notable.join(', ')}` : ''}` },
+        ] }],
+      });
     },
   },
   {
@@ -188,7 +196,7 @@ export default [
         .slice(0, 40);
       if (!roles.length) return ok('No roles besides @everyone.');
       const lines = roles.map((r) => `${r.hexColor} **${r.name}** · ${r.members.size}`);
-      return ok(embed({ title: `roles · ${guild.roles.cache.size - 1}`, description: lines.join('\n'), color: COLOR.neutral }));
+      return ok(embed({ title: `roles · ${guild.roles.cache.size - 1}`, description: listBody(lines), color: COLOR.neutral }));
     },
   },
   {
@@ -201,18 +209,27 @@ export default [
     async run({ guild, args, ok, err }) {
       const role = args.role;
       if (!role) return err('Role not found.');
-      if (role.position >= guild.members.me.roles.highest.position) return err('That role is above mine.');
+      if (!canManageRole(guild, role)) return err('That role sits above my highest role or cannot be managed.');
+      const missing = missingBotPerms(guild, null, ['ManageRoles']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
 
-      const members = await guild.members.fetch();
+      const members = await guild.members.fetch().catch(() => null);
+      if (!members) return err('Could not fetch the member list.');
       const targets = members.filter((m) => !m.user.bot);
-      let done = 0;
+      let done = 0, skipped = 0, failed = 0;
       for (const batch of chunk([...targets.values()], 5)) {
         const results = await Promise.allSettled(
-          batch.map((m) => (args.action === 'add' ? m.roles.add(role) : m.roles.remove(role))),
+          batch.map(async (m) => {
+            if (!canActOn(guild, m)) { skipped++; return; }
+            if (args.action === 'add' && m.roles.cache.has(role.id)) { skipped++; return; }
+            if (args.action === 'remove' && !m.roles.cache.has(role.id)) { skipped++; return; }
+            await (args.action === 'add' ? m.roles.add(role) : m.roles.remove(role)).catch(() => { failed++; });
+            done++;
+          }),
         );
-        done += results.filter((r) => r.status === 'fulfilled').length;
+        results.forEach((r) => { if (r.status === 'rejected') failed++; });
       }
-      return ok(`${args.action === 'add' ? 'Added' : 'Removed'} **${role.name}** for ${done} members.`);
+      return ok(`${args.action === 'add' ? 'Added' : 'Removed'} **${role.name}** for ${done} members${skipped ? ` (${skipped} skipped)` : ''}${failed ? `, ${failed} failed` : ''}.`);
     },
   },
   {
@@ -234,6 +251,7 @@ export default [
       }
 
       if (!args.role) return err('Pick a role.');
+      if (!canManageRole(guild, args.role)) return err('That role sits above my highest role or cannot be managed.');
       if (args.action === 'add') {
         if (cfg.autoroles.includes(args.role.id)) return err('Already on the list.');
         cfg.autoroles.push(args.role.id);
@@ -255,8 +273,9 @@ export default [
       const cfg = guildCfg(guild.id);
       const key = (args.name || 'default').toLowerCase();
       cfg.roleBackups ??= {};
-      cfg.roleBackups[key] = guild.roles.cache
+      const snap = guild.roles.cache
         .filter((r) => r.id !== guild.id && !r.managed)
+        .sort((a, b) => b.position - a.position)
         .map((r) => ({
           name: r.name,
           color: r.color,
@@ -265,8 +284,9 @@ export default [
           position: r.position,
           permissions: r.permissions.bitfield.toString(),
         }));
+      cfg.roleBackups[key] = snap;
       saveGuild(guild.id, cfg);
-      return ok(`Saved ${cfg.roleBackups[key].length} roles as \`${key}\`.`);
+      return ok(`Saved ${snap.length} roles as \`${key}\`.`);
     },
   },
   {
@@ -281,23 +301,25 @@ export default [
       const key = (args.name || 'default').toLowerCase();
       const snap = cfg.roleBackups?.[key];
       if (!snap?.length) return err(`No backup called \`${key}\`.`);
+      const missing = missingBotPerms(guild, null, ['ManageRoles']);
+      if (missing.length) return err(`I am missing: ${missing.join(', ')}`);
 
-      let made = 0;
+      let made = 0, skipped = 0, failed = 0;
       for (const r of snap) {
-        if (guild.roles.cache.some((x) => x.name === r.name)) continue;
-        await guild.roles
-          .create({
+        if (guild.roles.cache.some((x) => x.name === r.name)) { skipped++; continue; }
+        try {
+          await guild.roles.create({
             name: r.name,
             color: r.color,
             hoist: r.hoist,
             mentionable: r.mentionable,
             permissions: BigInt(r.permissions),
             reason: 'role restore',
-          })
-          .then(() => made++)
-          .catch(() => {});
+          }).catch(() => { failed++; });
+          made++;
+        } catch { failed++; }
       }
-      return ok(`Restored ${made} missing roles from \`${key}\`.`);
+      return ok(`Restored ${made} missing roles from \`${key}\`${skipped ? ` (${skipped} already existed)` : ''}.`);
     },
   },
 ];

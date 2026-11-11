@@ -4,6 +4,7 @@ import { guildCfg, saveGuild } from '../lib/db.js';
 import { resolveMember } from '../lib/resolvers.js';
 import { COLOR, embed } from '../lib/render.js';
 import { truncate } from '../lib/util.js';
+import { missingBotPerms, missingMemberPerms, page, caseLine, caseFooter, stamp, listBody } from './shared.js';
 import { B, C, E, I, M, S } from './helpers.js';
 
 function caseEmbed(c) {
@@ -13,7 +14,7 @@ function caseEmbed(c) {
     fields: [
       { name: 'target', value: c.targetId ? `<@${c.targetId}> \`${c.targetId}\`` : 'n/a', inline: true },
       { name: 'moderator', value: c.moderatorId ? `<@${c.moderatorId}>` : 'system', inline: true },
-      { name: 'when', value: `<t:${Math.floor(c.at / 1000)}:F>`, inline: true },
+      { name: 'when', value: stamp(c.at, 'F'), inline: true },
       ...(c.duration ? [{ name: 'duration', value: c.duration, inline: true }] : []),
       { name: 'reason', value: truncate(c.reason, 1000) },
     ],
@@ -43,8 +44,9 @@ export default [
       let list = casesOf(guild.id);
       if (args.type) list = list.filter((c) => c.type === String(args.type).toLowerCase());
       if (!list.length) return ok('Nothing on record.');
-      const lines = list.slice(0, args.limit || 12).map((c) => `#${c.id} \`${c.type}\` <@${c.targetId}> · ${truncate(c.reason, 60)}`);
-      return ok(embed({ title: `${list.length} cases`, description: lines.join('\n'), color: COLOR.mod }));
+      const p = page(list, 1, args.limit || 12);
+      const lines = p.items.map((c) => `${caseLine(c)} ${stamp(c.at)}`);
+      return ok(embed({ title: `${list.length} cases`, description: `${listBody(lines)}\n${caseFooter(p)}`, color: COLOR.mod }));
     },
   },
   {
@@ -58,6 +60,7 @@ export default [
       const c = cfg.cases.find((x) => x.id === Number(args.id));
       if (!c) return err('No such case.');
       c.reason = args.reason;
+      c.editedAt = Date.now();
       saveGuild(guild.id, cfg);
       return ok(`Case #${c.id} updated.`);
     },
@@ -69,9 +72,11 @@ export default [
     require: 'admin',
     options: [I('id', 'Case number', true)],
     async run({ guild, args, ok, err }) {
-      const n = removeCases(guild.id, (c) => c.id === Number(args.id));
+      const c = findCase(guild.id, args.id);
+      if (!c) return err('No such case.');
+      const n = removeCases(guild.id, (x) => x.id === Number(args.id));
       if (!n) return err('No such case.');
-      return ok(`Case #${args.id} deleted.`);
+      return ok(`Case #${args.id} (\`${c.type}\`) deleted.`);
     },
   },
   {
@@ -84,8 +89,9 @@ export default [
       if (!args.member) return err('Member not found.');
       const list = casesOf(guild.id).filter((c) => c.targetId === args.member.id);
       if (!list.length) return ok('Clean record.');
-      const lines = list.slice(0, 20).map((c) => `#${c.id} \`${c.type}\` · ${truncate(c.reason, 70)}`);
-      return ok(embed({ title: `history · ${args.member.user.tag}`, description: lines.join('\n'), color: COLOR.mod }));
+      const p = page(list, 1, 20);
+      const lines = p.items.map((c) => `#${c.id} \`${c.type}\` · ${truncate(c.reason, 70)} ${stamp(c.at)}`);
+      return ok(embed({ title: `history · ${args.member.user.tag}`, description: `${listBody(lines)}\n${caseFooter(p)}`, color: COLOR.mod }));
     },
   },
   {
@@ -119,7 +125,7 @@ export default [
       const perms = ch.permissionsFor(me);
       const have = perms.toArray();
       const need = ['ManageChannels', 'ManageRoles', 'ManageMessages', 'KickMembers', 'BanMembers', 'ModerateMembers', 'ViewAuditLog'];
-      const missing = need.filter((p) => !perms.has(PermissionsBitField.Flags[p]));
+      const missing = missingBotPerms(guild, ch, need);
       return ok(
         embed({
           title: `bot perms · #${ch.name}`,
@@ -143,13 +149,13 @@ export default [
       if (!args.member) return err('Member not found.');
       const ch = args.channel || channel;
       const perms = ch.permissionsFor(args.member);
-      const critical = ['Administrator', 'ManageGuild', 'ManageChannels', 'ManageRoles', 'ManageMessages', 'KickMembers', 'BanMembers', 'ModerateMembers'];
-      const held = critical.filter((p) => perms.has(PermissionsBitField.Flags[p]));
+      const missing = missingMemberPerms(args.member, ['Administrator', 'ManageGuild', 'ManageChannels', 'ManageRoles', 'ManageMessages', 'KickMembers', 'BanMembers', 'ModerateMembers']);
+      const held = ['Administrator', 'ManageGuild', 'ManageChannels', 'ManageRoles', 'ManageMessages', 'KickMembers', 'BanMembers', 'ModerateMembers'].filter((p) => !missing.includes(p));
       return ok(
         embed({
           title: `permcheck · ${args.member.user.tag}`,
-          color: held.includes('Administrator') ? COLOR.err : COLOR.info,
-          description: `in ${ch}\n\n${held.map((p) => `\`${p}\``).join(' ') || 'no elevated permissions'}`,
+          color: missing.length ? COLOR.warn : COLOR.ok,
+          description: `in ${ch}\n\n${held.map((p) => `\`${p}\``).join(' ') || 'no elevated permissions'}${missing.length ? `\nmissing: ${missing.join(', ')}` : ''}`,
         }),
       );
     },
@@ -197,7 +203,9 @@ export default [
         return ok(cfg.automod.badwords.length ? `\`${cfg.automod.badwords.join('`, `')}\`` : 'List is empty.');
       }
       if (!args.word) return err('Give me a word.');
-      const word = args.word.toLowerCase();
+      const word = args.word.toLowerCase().trim();
+      if (!word) return err('Give me a word.');
+      if (cfg.automod.badwords.length >= 500 && args.action === 'add') return err('Bad word list is full (500).');
 
       if (args.action === 'add') {
         if (cfg.automod.badwords.includes(word)) return err('Already blocked.');
@@ -234,9 +242,10 @@ export default [
     async run({ guild, args, ok }) {
       const cfg = guildCfg(guild.id);
       if (args.action === 'on' || args.action === 'off') {
-        cfg.automod.antispam = args.action === 'on';
-        cfg.automod.antilink = args.action === 'on';
-        cfg.automod.antiinvite = args.action === 'on';
+        const on = args.action === 'on';
+        cfg.automod.antispam = on;
+        cfg.automod.antilink = on;
+        cfg.automod.antiinvite = on;
         saveGuild(guild.id, cfg);
       }
       return ok(
@@ -249,6 +258,7 @@ export default [
             { name: 'antiinvite', value: cfg.automod.antiinvite ? 'on' : 'off', inline: true },
             { name: 'badwords', value: String(cfg.automod.badwords.length), inline: true },
             { name: 'warn threshold', value: String(cfg.automod.warnThreshold), inline: true },
+            { name: 'exemptions', value: String((cfg.automod.exempt || []).length), inline: true },
           ],
         }),
       );
