@@ -233,12 +233,15 @@ client.on(Events.MessageReactionRemove, (reaction, user) => {
   applyReactionRole(reaction, user, false).catch(() => {});
 });
 
+const ACTIVITY_TYPES = { playing: 0, streaming: 1, listening: 2, watching: 3, competing: 5 };
+const ACTIVITY_TYPE = ACTIVITY_TYPES[(process.env.BOT_ACTIVITY_TYPE || 'playing').toLowerCase()] ?? 0;
+
 client.once(Events.ClientReady, (ready) => {
   console.log(`wellix online as ${ready.user.tag}`);
   console.log(`${COMMANDS.length} commands, ${CAPABILITY_COUNT} capabilities`);
 
   ready.user.setPresence({
-    activities: [{ name: '@wellix to run the server', type: 0 }],
+    activities: [{ name: process.env.BOT_ACTIVITY || `w!help · ${COMMANDS.length} commands`, type: ACTIVITY_TYPE }],
     status: 'online',
   });
 
