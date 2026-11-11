@@ -44,6 +44,8 @@ function buildProviders() {
 
   for (const name of providers) {
     const upper = name.toUpperCase();
+    const enabled = process.env[`AI_${upper}_ENABLED`];
+    if (enabled !== undefined && enabled.toLowerCase() === 'false') continue;
     const keys = providerKeys(`AI_${upper}`);
     if (!keys.length) continue;
     list.push({
